@@ -1,0 +1,245 @@
+import { CalcolaCodice } from '../CommonScript.js';
+
+// Elementi DOM
+const studentContainer = document.getElementById('students-container');
+const fileInput = document.getElementById('fileInput');
+const downloadExcelBtn = document.getElementById('download-excel');
+
+// ======== LETTURA FILE XLSX ========== 
+
+fileInput.addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  if (!file) return alert("Nessun file selezionato.");
+
+  try {
+    const data = await file.arrayBuffer();
+    const workbook = XLSX.read(data, { type: "array" });
+    const sheetName = workbook.SheetNames[0];
+    const sheet = workbook.Sheets[sheetName];
+
+    const rows = XLSX.utils.sheet_to_json(sheet, { raw: false });
+
+    if (rows.length === 0) {
+      alert("Il file Excel è vuoto o non valido.");
+      return;
+    }
+    const promises = rows.map(async (row) => {
+      if (!row.Nome || !row.Cognome || !row.Classe || !row.OpendayDate) {
+        return null;
+      }
+      try {
+        const nome = String(row.Nome).trim();
+
+        // ✅ CORREZIONE DEFINITIVA COGNOME VERO/FALSO
+        const cognome = (typeof row.Cognome === 'boolean')
+          ? (row.Cognome ? 'VERO' : 'FALSO')
+          : String(row.Cognome).trim();
+
+        const classe = String(row.Classe).trim();
+        const OpenDayDate = String(row.OpendayDate).trim();
+        console.log(row.OpendayDate);
+        const response = await fetch(`../api/insertStudente.php?nome=${nome}&cognome=${cognome}&classe=${classe}&data=${OpenDayDate}`);
+        const risposta = await response.json();
+        if(risposta != true)
+          alert("Errore nell'inserimento. Riprova.");         
+      } catch(error) {
+        console.error("Errore durante inserimento documento:", error);
+      }
+    });
+
+    await Promise.all(promises);
+
+    alert("Caricamento dati terminato.");
+    loadStudents();
+  } catch(error) {
+    console.error("Errore durante la lettura del file Excel:", error);
+    alert("Errore durante la lettura del file Excel.");
+  }
+});
+
+// ======== LETTURA STUDENTI DA FIRESTORE ==========
+
+async function loadStudents() {
+  try {
+    const response = await fetch(`../api/getStudenti.php`);
+    const allStudents = await response.json();
+    if (allStudents === null) {
+      studentContainer.textContent = "Nessun studente caricato.";
+      return;
+    }
+    const grouped = {};
+    allStudents.forEach(stu => {
+      if (!stu.OpenDayDate) return;
+      if (!grouped[stu.OpenDayDate]) grouped[stu.OpenDayDate] = [];
+      grouped[stu.OpenDayDate].push(stu);
+    });
+
+    const dates = Object.keys(grouped).sort((a, b) => new Date(a) - new Date(b));
+
+    studentContainer.innerHTML = '';
+
+    const selectDate = document.createElement('select');
+    selectDate.id = 'select-date';
+    selectDate.style.marginBottom = '10px';
+    dates.forEach(date => {
+      const option = document.createElement('option');
+      option.value = date;
+      option.textContent = date;
+      selectDate.appendChild(option);
+    });
+    studentContainer.appendChild(selectDate);
+
+    const btnDeleteDate = document.createElement('button');
+    btnDeleteDate.textContent = 'Elimina tutti studenti di questa data';
+    btnDeleteDate.classList.add('btn', 'btn-primary', 'btn-lg');
+    btnDeleteDate.style.marginLeft = '10px';
+    studentContainer.appendChild(btnDeleteDate);
+
+    const tableContainer = document.createElement('div');
+    tableContainer.style.marginTop = '10px';
+    studentContainer.appendChild(tableContainer);
+
+    function showTable(date) {
+      const students = grouped[date] || [];
+      tableContainer.innerHTML = '';
+
+      if (students.length === 0) {
+        tableContainer.textContent = "Nessuno studente per questa data.";
+        return;
+      }
+
+      const table = document.createElement('table');
+      table.style.width = '100%';
+      table.style.borderCollapse = 'collapse';
+
+      const thead = document.createElement('thead');
+
+      const trTitle = document.createElement('tr');
+      const thTitle = document.createElement('th');
+      thTitle.colSpan = 5;
+      thTitle.textContent = `Alunni data: ${date}`;
+      thTitle.style.textAlign = 'center';
+      thTitle.style.padding = '12px';
+      thTitle.style.fontSize = '1.2em';
+      thTitle.style.backgroundColor = '#f0f0f0';
+      trTitle.appendChild(thTitle);
+      thead.appendChild(trTitle);
+
+      const trHead = document.createElement('tr');
+      ['Nome', 'Cognome', 'Classe', 'Codice', 'Presenza'].forEach(h => {
+        const th = document.createElement('th');
+        th.textContent = h;
+        th.style.border = '1px solid #ccc';
+        th.style.padding = '8px';
+        trHead.appendChild(th);
+      });
+      thead.appendChild(trHead);
+      table.appendChild(thead);
+
+      const tbody = document.createElement('tbody');
+      students.forEach(stu => {
+        const tr = document.createElement('tr');
+        tr.style.cursor = 'pointer';
+        tr.title = "Clicca per eliminare questo studente";
+
+        tr.addEventListener('click', async () => {
+          if (confirm(`Eliminare studente ${stu.nome} ${stu.cognome}?`)) {
+            try {
+              const response = await fetch(`../api/deleteStudente.php?nome=${stu.nome}&cognome=${stu.cognome}&classe=${stu.classe}&data=${stu.OpenDayDate}`)
+              const risposta = await response.json();
+              if(risposta === true)
+                alert("Studente eliminato.");
+              else 
+                alert("Errore nell'eliminazione. Riprova.");
+              loadStudents();
+            } catch(error) {
+              console.error("Errore durante eliminazione studente:", error);
+              alert("Errore durante eliminazione studente.");
+            }
+          }
+        });
+        const presenzaTesto = stu.presenza == 1 ? 'Presente' : 'Assente';
+        [stu.nome, stu.cognome, stu.classe, CalcolaCodice(stu), presenzaTesto].forEach(val => {
+          const td = document.createElement('td');
+          td.textContent = val;
+          td.style.border = '1px solid #ccc';
+          td.style.padding = '8px';
+          td.style.textAlign = 'left';
+          tr.appendChild(td);
+        });
+        tbody.appendChild(tr);
+      });
+
+      table.appendChild(tbody);
+      tableContainer.appendChild(table);
+    }
+
+    selectDate.addEventListener('change', () => showTable(selectDate.value));
+
+    btnDeleteDate.addEventListener('click', async () => {
+      const dateToDelete = selectDate.value;
+      if (!confirm(`Eliminare tutti gli studenti della data ${dateToDelete}?`)) return;
+      try {
+        const response = await fetch(`../api/deleteStudenti.php?}&data=${dateToDelete}`)
+        const risposta = await response.json();
+        if(risposta === true)
+          alert(`Eliminati tutti gli studenti della data ${dateToDelete}`);
+        else 
+          alert("Errore nell'eliminazione. Riprova.");
+        loadStudents();
+      } catch(error) {
+        console.error("Errore durante eliminazione studenti per data:", error);
+        alert("Errore durante eliminazione studenti.");
+      }
+    });
+
+    showTable(dates[0]);
+
+    window._groupedStudents = grouped;
+    window._selectedDate = dates[0];
+    selectDate.addEventListener('change', () => {
+      window._selectedDate = selectDate.value;
+    });
+  } catch(error) {
+    console.error("Errore durante il caricamento degli studenti:", error);
+    studentContainer.textContent = "Errore durante il caricamento degli studenti.";
+  }
+}
+
+const downloadBtn = document.getElementById('download-example');
+// --- BOTTONE DOWNLOAD XLSX STUDENTI FILTRATI ---
+if (downloadExcelBtn) {
+  downloadExcelBtn.addEventListener('click', () => {
+    const grouped = window._groupedStudents;
+    const selectedDate = window._selectedDate;
+    if (!grouped || !selectedDate || !grouped[selectedDate]) {
+      alert("Nessun dato disponibile per il download.");
+      return;
+    }
+
+    const dataToExport = grouped[selectedDate].map(s => ({
+      Nome: s.nome,
+      Cognome: s.cognome,
+      Classe: s.classe,
+      Codice: CalcolaCodice(s),
+      Presenza: s.presenza ? "Presente" : "Assente"
+    }));
+
+    const ws = XLSX.utils.json_to_sheet(dataToExport);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Studenti");
+    XLSX.writeFile(wb, `studenti_${selectedDate}.xlsx`);
+  });
+}
+
+// --- BOTTONE DOWNLOAD FILE EXAMPLE ---
+const ExampledownloadBtn = document.getElementById('download-example');
+if (ExampledownloadBtn) {
+  ExampledownloadBtn.addEventListener('click', () => {
+    const link = document.createElement('a');
+    link.href = './example.xlsx';
+    link.download = 'example.xlsx';
+    link.click();
+  });
+}
+loadStudents();
